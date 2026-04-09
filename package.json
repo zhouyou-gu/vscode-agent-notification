@@ -1,0 +1,102 @@
+{
+  "name": "agent-notification",
+  "displayName": "Agent Notification",
+  "description": "Get notified when Codex or Claude Code finishes a task",
+  "version": "0.1.0",
+  "publisher": "agent-notify",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agent-notify.configure",
+        "title": "Agent Notify: Configure Hooks"
+      },
+      {
+        "command": "agent-notify.reconfigure",
+        "title": "Agent Notify: Reconfigure Hooks"
+      },
+      {
+        "command": "agent-notify.test",
+        "title": "Agent Notify: Send Test Notification"
+      },
+      {
+        "command": "agent-notify.setupRemote",
+        "title": "Agent Notify: Setup Remote"
+      },
+      {
+        "command": "agent-notify.showLogs",
+        "title": "Agent Notify: Show Logs"
+      }
+    ],
+    "configuration": {
+      "title": "Agent Notification",
+      "properties": {
+        "agent-notify.port": {
+          "type": "number",
+          "default": 19876,
+          "description": "HTTP server port for receiving notifications"
+        },
+        "agent-notify.autoFocus": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-focus window on notification (no click needed)"
+        },
+        "agent-notify.sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "codex",
+              "claude"
+            ]
+          },
+          "default": [
+            "codex",
+            "claude"
+          ],
+          "description": "Which agent tools to show notifications for"
+        },
+        "agent-notify.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "Trace log verbosity"
+        },
+        "agent-notify.logRetentionDays": {
+          "type": "number",
+          "default": 14,
+          "description": "Auto-delete logs older than this many days"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "npm run build -- --watch",
+    "package": "npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  }
+}
