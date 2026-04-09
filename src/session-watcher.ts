@@ -3,6 +3,7 @@ import * as path from "path";
 import * as os from "os";
 import { AgentEvent } from "./types";
 import { Logger } from "./logger";
+import { SessionStore } from "./session-store";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -10,10 +11,14 @@ const POLL_INTERVAL_MS = 2000;
  * Watches Claude Code and Codex JSONL session files for completion events.
  * Uses fs.watchFile (polling) since VS Code's createFileSystemWatcher
  * doesn't reliably detect changes outside the workspace.
+ *
+ * When a SessionStore is provided, events are routed through it for
+ * state tracking and dedup. Otherwise, events go directly to onEvent callback.
  */
 export class SessionWatcher {
   private logger: Logger;
   private onEvent: (event: AgentEvent) => void;
+  private sessionStore?: SessionStore;
 
   // Track file sizes to only read new content
   private fileSizes = new Map<string, number>();
@@ -26,9 +31,22 @@ export class SessionWatcher {
   private claudeProjectsDir = path.join(os.homedir(), ".claude", "projects");
   private codexSessionsDir = path.join(os.homedir(), ".codex", "sessions");
 
-  constructor(logger: Logger, onEvent: (event: AgentEvent) => void) {
+  constructor(
+    logger: Logger,
+    onEvent: (event: AgentEvent) => void,
+    sessionStore?: SessionStore
+  ) {
     this.logger = logger;
     this.onEvent = onEvent;
+    this.sessionStore = sessionStore;
+  }
+
+  private emitEvent(event: AgentEvent): void {
+    if (this.sessionStore) {
+      this.sessionStore.processWatcherEvent(event);
+    } else {
+      this.onEvent(event);
+    }
   }
 
   start(): void {
@@ -202,6 +220,7 @@ export class SessionWatcher {
         message: truncated,
         cwd: entry.cwd || "",
         threadId: entry.sessionId || undefined,
+        sessionId: entry.sessionId || undefined,
         timestamp: Date.now(),
         rawPayload: { stop_reason: "end_turn", entrypoint: entry.entrypoint },
       };
@@ -212,7 +231,7 @@ export class SessionWatcher {
         entrypoint: entry.entrypoint,
       });
 
-      this.onEvent(event);
+      this.emitEvent(event);
     } catch {
       // Not valid JSON or unexpected format — skip
     }
@@ -253,7 +272,7 @@ export class SessionWatcher {
         turnId: payload.turn_id,
       });
 
-      this.onEvent(event);
+      this.emitEvent(event);
     } catch {
       // Not valid JSON or unexpected format — skip
     }

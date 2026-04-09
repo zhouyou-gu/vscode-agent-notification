@@ -39,6 +39,10 @@
       {
         "command": "agent-notify.showLogs",
         "title": "Agent Notify: Show Logs"
+      },
+      {
+        "command": "agent-notify.restartMenuBar",
+        "title": "Agent Notify: Restart Menu Bar"
       }
     ],
     "configuration": {

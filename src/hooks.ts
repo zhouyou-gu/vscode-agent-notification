@@ -20,7 +20,7 @@ curl -s -X POST \\
 `;
 
 const CLAUDE_HOOK_SCRIPT = `#!/bin/sh
-# agent-notify v1 — do not edit (managed by Agent Notification extension)
+# agent-notify v2 — do not edit (managed by Agent Notification extension)
 PORT=$(cat "$HOME/.config/agent-notify/port" 2>/dev/null || echo 19876)
 curl -s -X POST \\
   -H "Content-Type: application/json" \\
@@ -188,23 +188,35 @@ async function configureClaude(
     // File doesn't exist or invalid — start fresh
   }
 
-  // Navigate to hooks.Notification
+  // Navigate to hooks object
   if (!config.hooks || typeof config.hooks !== "object") {
     config.hooks = {};
   }
   const hooks = config.hooks as Record<string, unknown>;
 
-  if (!Array.isArray(hooks.Notification)) {
-    hooks.Notification = [];
-  }
-  const notifHooks = hooks.Notification as Array<Record<string, unknown>>;
+  // All hook event types we want to register
+  const HOOK_EVENTS = [
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "Notification",
+    "Stop",
+    "SubagentStop",
+    "SessionStart",
+    "SessionEnd",
+    "PreCompact",
+  ];
 
-  // Check if already configured
-  const alreadyConfigured = notifHooks.some((entry) => {
-    const entryHooks = entry.hooks as Array<Record<string, unknown>> | undefined;
-    return entryHooks?.some(
-      (h) => typeof h.command === "string" && h.command.includes(MARKER)
-    );
+  // Check if already configured (check any event for our marker)
+  const alreadyConfigured = HOOK_EVENTS.some((eventName) => {
+    const eventHooks = hooks[eventName] as Array<Record<string, unknown>> | undefined;
+    return eventHooks?.some((entry) => {
+      const entryHooks = entry.hooks as Array<Record<string, unknown>> | undefined;
+      return entryHooks?.some(
+        (h) => typeof h.command === "string" && h.command.includes(MARKER)
+      );
+    });
   });
 
   if (alreadyConfigured && !force) {
@@ -212,28 +224,44 @@ async function configureClaude(
     return true;
   }
 
-  // Remove our old entry if force-reconfiguring
-  if (force) {
-    hooks.Notification = notifHooks.filter((entry) => {
-      const entryHooks = entry.hooks as Array<Record<string, unknown>> | undefined;
-      return !entryHooks?.some(
-        (h) => typeof h.command === "string" && h.command.includes(MARKER)
-      );
-    });
+  // Remove our old entries from all event types if force-reconfiguring
+  if (force || alreadyConfigured) {
+    for (const eventName of HOOK_EVENTS) {
+      const eventHooks = hooks[eventName] as Array<Record<string, unknown>> | undefined;
+      if (eventHooks) {
+        hooks[eventName] = eventHooks.filter((entry) => {
+          const entryHooks = entry.hooks as Array<Record<string, unknown>> | undefined;
+          return !entryHooks?.some(
+            (h) => typeof h.command === "string" && h.command.includes(MARKER)
+          );
+        });
+      }
+    }
   }
 
-  // Append our hook entry
-  const ourEntry = {
-    matcher: "",
-    hooks: [
-      {
-        type: "command",
-        command: `sh ${hookPath}`,
-      },
-    ],
-  };
+  // Register our hook for each event type
+  for (const eventName of HOOK_EVENTS) {
+    if (!Array.isArray(hooks[eventName])) {
+      hooks[eventName] = [];
+    }
 
-  (hooks.Notification as Array<unknown>).push(ourEntry);
+    const ourEntry: Record<string, unknown> = {
+      matcher: "",
+      hooks: [
+        {
+          type: "command",
+          command: `sh ${hookPath}`,
+        },
+      ],
+    };
+
+    // PermissionRequest gets a long timeout so we can respond from VS Code (Phase 2)
+    if (eventName === "PermissionRequest") {
+      ourEntry.timeout = 86400;
+    }
+
+    (hooks[eventName] as Array<unknown>).push(ourEntry);
+  }
 
   const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true });
@@ -242,7 +270,6 @@ async function configureClaude(
   logger.info("setup", "hook_configured", {
     tool: "claude",
     action: alreadyConfigured ? "replaced" : "appended",
-    existingHooks: notifHooks.length,
     configPath,
   });
   return true;

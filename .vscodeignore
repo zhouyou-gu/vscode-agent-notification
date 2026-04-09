@@ -1,11 +1,15 @@
 .vscode/**
 .vscode-test/**
 .claude/**
+.reference/**
 .git/**
 src/**
 node_modules/**
+bin/statusbar/.venv/**
+bin/statusbar/AgentStatusBar.app/**
 .gitignore
 tsconfig.json
 **/*.ts
 **/*.map
 *.vsix
+install.sh

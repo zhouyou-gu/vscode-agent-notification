@@ -1,18 +1,25 @@
 import * as vscode from "vscode";
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import { execFile } from "child_process";
 import { Logger } from "./logger";
 import { NotificationServer } from "./server";
 import { parseAgentEvent, showNotification, setExtensionPath } from "./notification";
 import { detectTools, configureHooks, isTerminalNotifierAvailable } from "./hooks";
 import { detectRemote, setupRemote } from "./remote";
 import { SessionWatcher } from "./session-watcher";
+import { SessionStore } from "./session-store";
+import type { AgentSource } from "./types";
 
 const STATE_KEY_CONFIGURED = "agent-notify.configured";
 const STATE_KEY_DISMISSED = "agent-notify.dismissed";
 const STATE_KEY_VERSION = "agent-notify.configVersion";
-const CONFIG_VERSION = 1;
+const CONFIG_VERSION = 2;
 
 let logger: Logger;
 let server: NotificationServer;
+let sessionStore: SessionStore;
 let sessionWatcher: SessionWatcher;
 let statusBarItem: vscode.StatusBarItem;
 
@@ -26,20 +33,50 @@ export async function activate(
   logger.cleanOldLogs();
   setExtensionPath(context.extensionPath);
 
-  // Start HTTP server
+  // Create session store — central state manager for all agent sessions
+  sessionStore = new SessionStore(logger);
+  context.subscriptions.push({ dispose: () => sessionStore.dispose() });
+
+  // Session store fires notifications through showNotification
+  sessionStore.onNotification((event) => {
+    showNotification(event, logger);
+  });
+
+  // Start HTTP server — routes events through session store
   server = new NotificationServer(logger, (source, payload) => {
     logger.info("event", "agent_event", {
       source,
+      hookEventName: payload.hook_event_name,
       rawPayload: payload,
     });
 
-    const event = parseAgentEvent(source, payload);
-    if (event) {
-      showNotification(event, logger);
-    } else {
-      logger.debug("event", "event_filtered", { source, type: payload.type });
-    }
+    sessionStore.processHookEvent(source as AgentSource, payload);
   });
+
+  // Expose session state via /sessions endpoint
+  server.setSessionsHandler(() => {
+    const wsFile = vscode.workspace.workspaceFile;
+    const workspaceFilePath = wsFile && wsFile.scheme === "file" ? wsFile.fsPath : undefined;
+    const workspaceFolders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) || [];
+
+    return sessionStore.getAllSessions().map((s) => ({
+      id: s.id,
+      source: s.source,
+      cwd: s.cwd,
+      projectName: s.projectName,
+      phase: s.phase,
+      lastActivity: s.lastActivity,
+      lastPhaseChange: s.lastPhaseChange,
+      createdAt: s.createdAt,
+      toolCount: s.tools.size,
+      message: s.message,
+      permissionContext: s.permissionContext,
+      workspaceFile: workspaceFilePath,
+      workspaceFolders,
+    }));
+  });
+
+  server.setClearSessionsHandler(() => sessionStore.clearAllSessions());
 
   let serverPort = 0;
   try {
@@ -56,10 +93,12 @@ export async function activate(
   }
   context.subscriptions.push({ dispose: () => server.stop() });
 
-  // Start session file watcher (catches VS Code extension-based agent sessions)
-  sessionWatcher = new SessionWatcher(logger, (event) => {
-    showNotification(event, logger);
-  });
+  // Start session file watcher — routes through session store for dedup
+  sessionWatcher = new SessionWatcher(
+    logger,
+    (event) => showNotification(event, logger),
+    sessionStore
+  );
   sessionWatcher.start();
   context.subscriptions.push({ dispose: () => sessionWatcher.dispose() });
 
@@ -70,6 +109,11 @@ export async function activate(
   );
   context.subscriptions.push(statusBarItem);
   updateStatusBar(serverPort, context);
+
+  // Update status bar when sessions change
+  sessionStore.onSessionChanged(() => {
+    updateStatusBarFromSessions(serverPort, context);
+  });
 
   // Register commands
   context.subscriptions.push(
@@ -87,6 +131,9 @@ export async function activate(
     ),
     vscode.commands.registerCommand("agent-notify.showLogs", () =>
       logger.showOutputChannel()
+    ),
+    vscode.commands.registerCommand("agent-notify.restartMenuBar", () =>
+      restartMenuBar(context)
     )
   );
 
@@ -130,6 +177,39 @@ function updateStatusBar(
     statusBarItem.tooltip = "Click to set up agent notifications";
     statusBarItem.command = "agent-notify.configure";
     statusBarItem.show();
+  }
+}
+
+function updateStatusBarFromSessions(
+  port: number,
+  context: vscode.ExtensionContext
+): void {
+  if (port <= 0) return;
+
+  const active = sessionStore.getActiveSessions();
+  const needsAttention = sessionStore.getSessionsNeedingAttention();
+
+  if (needsAttention.length > 0) {
+    statusBarItem.text = `$(alert) ${needsAttention.length} approval needed`;
+    statusBarItem.tooltip = `${active.length} active session(s), ${needsAttention.length} need approval`;
+    statusBarItem.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
+    statusBarItem.command = "agent-notify.showLogs";
+    statusBarItem.show();
+  } else if (active.length > 0) {
+    const processing = active.filter((s) => s.phase === "processing");
+    if (processing.length > 0) {
+      statusBarItem.text = `$(sync~spin) ${processing.length} processing`;
+      statusBarItem.tooltip = `${active.length} active session(s)`;
+    } else {
+      statusBarItem.text = `$(bell) ${active.length} session(s)`;
+      statusBarItem.tooltip = `${active.length} active session(s)`;
+    }
+    statusBarItem.backgroundColor = undefined;
+    statusBarItem.command = "agent-notify.showLogs";
+    statusBarItem.show();
+  } else {
+    // No active sessions — revert to default
+    updateStatusBar(port, context);
   }
 }
 
@@ -263,6 +343,37 @@ async function runSetupRemote(): Promise<void> {
     return;
   }
   await setupRemote(remote, server.getPort(), logger);
+}
+
+// ── Menu bar helper ──────────────────────────────────────────────
+
+function restartMenuBar(context: vscode.ExtensionContext): void {
+  // Kill existing
+  execFile("pkill", ["-f", "agent-statusbar.py"], () => {
+    // Find the .app — check user-local first, then extension bundled
+    const candidates = [
+      path.join(os.homedir(), ".config", "agent-notify", "statusbar", "AgentStatusBar.app"),
+      path.join(context.extensionPath, "bin", "statusbar", "AgentStatusBar.app"),
+    ];
+
+    const appPath = candidates.find((p) => fs.existsSync(p));
+    if (!appPath) {
+      vscode.window.showWarningMessage(
+        "AgentStatusBar.app not found. Run the installer or check bin/statusbar/."
+      );
+      return;
+    }
+
+    setTimeout(() => {
+      execFile("open", [appPath], (err) => {
+        if (err) {
+          vscode.window.showErrorMessage(`Failed to start menu bar helper: ${err.message}`);
+        } else {
+          vscode.window.showInformationMessage("Menu bar helper restarted.");
+        }
+      });
+    }, 1000);
+  });
 }
 
 export function deactivate(): void {

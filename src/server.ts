@@ -14,15 +14,28 @@ export type NotifyHandler = (
   payload: Record<string, unknown>
 ) => void;
 
+export type SessionsHandler = () => Array<Record<string, unknown>>;
+export type ClearSessionsHandler = () => number;
+
 export class NotificationServer {
   private server: http.Server | null = null;
   private port = 0;
   private onNotify: NotifyHandler;
+  private onGetSessions?: SessionsHandler;
+  private onClearSessions?: ClearSessionsHandler;
   private logger: Logger;
 
   constructor(logger: Logger, onNotify: NotifyHandler) {
     this.logger = logger;
     this.onNotify = onNotify;
+  }
+
+  setSessionsHandler(handler: SessionsHandler): void {
+    this.onGetSessions = handler;
+  }
+
+  setClearSessionsHandler(handler: ClearSessionsHandler): void {
+    this.onClearSessions = handler;
   }
 
   async start(): Promise<number> {
@@ -121,6 +134,16 @@ export class NotificationServer {
       return;
     }
 
+    if (req.method === "GET" && req.url?.startsWith("/sessions")) {
+      this.handleGetSessions(req, res);
+      return;
+    }
+
+    if (req.method === "DELETE" && req.url?.startsWith("/sessions")) {
+      this.handleClearSessions(req, res);
+      return;
+    }
+
     res.writeHead(404);
     res.end("Not Found");
   }
@@ -167,6 +190,18 @@ export class NotificationServer {
         });
       }
     });
+  }
+
+  private handleGetSessions(_req: http.IncomingMessage, res: http.ServerResponse): void {
+    const sessions = this.onGetSessions ? this.onGetSessions() : [];
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ sessions }));
+  }
+
+  private handleClearSessions(_req: http.IncomingMessage, res: http.ServerResponse): void {
+    const cleared = this.onClearSessions ? this.onClearSessions() : 0;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ cleared }));
   }
 
   private writePortFile(): void {
