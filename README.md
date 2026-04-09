@@ -1,27 +1,27 @@
 # Agent Notification
 
-VS Code extension that sends you a **macOS desktop notification** when Codex or Claude Code finishes a task — even when VS Code isn't focused.
+VS Code extension that sends you a **macOS desktop notification** when Codex or Claude Code finishes a task — even when VS Code isn't focused. Click the banner to jump back to VS Code.
 
-## Install
+Works with both **CLI** and **VS Code extension** versions of Codex and Claude Code.
+
+## Install (one command)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/zhouyou-gu/vscode-agent-notification/main/install.sh | sh
+```
+
+This downloads the latest release VSIX and installs it into VS Code. Then reload VS Code.
 
 ### From source (development)
 
 ```sh
-git clone <repo-url>
+git clone https://github.com/zhouyou-gu/vscode-agent-notification.git
 cd vscode-agent-notification
 npm install
 npm run build
 ```
 
-Then open the folder in VS Code and press **F5** to launch with the extension.
-
-### From VSIX
-
-```sh
-npm run build
-npx @vscode/vsce package
-code --install-extension agent-notification-0.1.0.vsix
-```
+Open the folder in VS Code and press **F5** to launch with the extension.
 
 ## Setup (guided — 3 steps)
 
@@ -44,16 +44,35 @@ If you skip setup, click the **"Agent Notify — Setup needed"** status bar item
 
 ## How It Works
 
+The extension detects agent task completion via two mechanisms:
+
+### 1. CLI hooks (for terminal-based sessions)
+
 ```
-Agent finishes task
+Agent CLI finishes task
   → Hook script runs (configured by extension)
   → curl POST localhost:19876/notify
-  → Extension receives event
-  → macOS desktop banner (terminal-notifier)
-  → VS Code in-app notification with action buttons
+  → Extension shows notification
 ```
 
-The extension runs an HTTP server on `localhost:19876`. Hook scripts for Codex/Claude POST agent events to it. The extension shows both a macOS system banner and a VS Code notification with "Focus Workspace" / "Open Folder" actions.
+### 2. Session file watching (for VS Code extension-based sessions)
+
+```
+Agent VS Code extension finishes task
+  → JSONL session file is updated
+  → Extension detects completion marker
+  → Extension shows notification
+```
+
+The session watcher monitors:
+- **Claude Code**: `~/.claude/projects/**/*.jsonl` for `stop_reason: "end_turn"`
+- **Codex**: `~/.codex/sessions/YYYY/MM/DD/*.jsonl` for `type: "task_complete"`
+
+### Notification behavior
+
+- **macOS banner**: Always fires via `terminal-notifier`. Click the banner to focus VS Code.
+- **VS Code in-app notification**: Shows with "Focus Workspace" / "Open Folder" action buttons.
+- **Dedup**: 5-second window per source+CWD prevents notification floods.
 
 ## Commands
 
@@ -91,14 +110,28 @@ When connected via Remote-SSH:
    ```
 3. Reconnect to the remote host
 
+## Architecture
+
+```
+src/
+├── extension.ts        # Entry point, guided setup, commands
+├── server.ts           # HTTP server (POST /notify, GET /health)
+├── session-watcher.ts  # Watches JSONL files for IDE extension sessions
+├── notification.ts     # Event parsing, macOS banners, VS Code notifications
+├── hooks.ts            # Auto-configures Codex/Claude hook scripts
+├── remote.ts           # Remote-SSH detection and port forwarding guidance
+├── logger.ts           # JSONL file logging with daily rotation
+└── types.ts            # Shared interfaces and types
+```
+
 ## Logs
 
 Trace logs at `~/.config/agent-notify/logs/` (JSONL format):
 - `server-*.log` — HTTP requests
-- `events-*.log` — Agent events with raw payloads (replayable)
-- `actions-*.log` — User interactions
+- `event-*.log` — Agent events with raw payloads
+- `action-*.log` — Notification actions
 - `setup-*.log` — Configuration changes
-- `errors-*.log` — Errors
+- `error-*.log` — Errors
 
 Live logs: run **Agent Notify: Show Logs** or open the "Agent Notification" output channel.
 
@@ -114,8 +147,8 @@ curl -X POST -H "Content-Type: application/json" \
   "http://localhost:19876/notify?source=codex"
 
 # Simulate Claude Code notification
-echo '{"hook_event_name":"Notification","cwd":"/tmp","message":"Task complete"}' | \
-  curl -X POST -H "Content-Type: application/json" -d @- \
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"hook_event_name":"Notification","cwd":"/tmp","message":"Task complete"}' \
   "http://localhost:19876/notify?source=claude"
 ```
 
@@ -124,8 +157,8 @@ echo '{"hook_event_name":"Notification","cwd":"/tmp","message":"Task complete"}'
 | Path | Purpose |
 |------|---------|
 | `~/.config/agent-notify/port` | Current server port |
-| `~/.config/agent-notify/hooks/codex-hook.sh` | Hook script for Codex |
-| `~/.config/agent-notify/hooks/claude-hook.sh` | Hook script for Claude Code |
+| `~/.config/agent-notify/hooks/codex-hook.sh` | Hook script for Codex CLI |
+| `~/.config/agent-notify/hooks/claude-hook.sh` | Hook script for Claude Code CLI |
 | `~/.config/agent-notify/terminal-notifier.app/` | macOS notification binary |
 | `~/.config/agent-notify/logs/` | Trace logs |
 

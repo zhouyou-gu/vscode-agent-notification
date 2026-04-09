@@ -2,17 +2,12 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import * as https from "https";
-import { execFile } from "child_process";
 import { AgentSource } from "./types";
 import { Logger } from "./logger";
 
 const CONFIG_DIR = path.join(os.homedir(), ".config", "agent-notify");
 const HOOKS_DIR = path.join(CONFIG_DIR, "hooks");
 const MARKER = "agent-notify";
-const TN_APP = path.join(CONFIG_DIR, "terminal-notifier.app");
-const TN_BIN = path.join(TN_APP, "Contents", "MacOS", "terminal-notifier");
-const TN_URL = "https://github.com/julienXX/terminal-notifier/releases/download/2.0.0/terminal-notifier-2.0.0.zip";
 
 const CODEX_HOOK_SCRIPT = `#!/bin/sh
 # agent-notify v1 — do not edit (managed by Agent Notification extension)
@@ -70,11 +65,6 @@ export async function configureHooks(
   // Ensure hooks directory exists
   fs.mkdirSync(HOOKS_DIR, { recursive: true });
 
-  // Download terminal-notifier for macOS banners (one-time)
-  if (process.platform === "darwin") {
-    await ensureTerminalNotifier(logger);
-  }
-
   if (tools.codex) {
     const result = await configureCodex(tools.codexConfigPath, logger, force);
     if (result) configured.push("codex");
@@ -88,56 +78,11 @@ export async function configureHooks(
   return configured;
 }
 
-export async function ensureTerminalNotifier(logger: Logger): Promise<boolean> {
-  if (fs.existsSync(TN_BIN)) {
-    logger.info("setup", "terminal_notifier_exists", { path: TN_BIN });
-    return true;
-  }
-
-  logger.info("setup", "downloading_terminal_notifier");
-  const zipPath = path.join(CONFIG_DIR, "terminal-notifier.zip");
-
-  try {
-    await downloadFile(TN_URL, zipPath);
-    await new Promise<void>((resolve, reject) => {
-      execFile("unzip", ["-o", zipPath, "-d", CONFIG_DIR], (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-    fs.unlinkSync(zipPath);
-    // Clean up extra files from the zip
-    const readmePath = path.join(CONFIG_DIR, "README.markdown");
-    if (fs.existsSync(readmePath)) fs.unlinkSync(readmePath);
-
-    logger.info("setup", "terminal_notifier_installed", { path: TN_BIN });
-    return true;
-  } catch (err) {
-    logger.error("setup", "terminal_notifier_download_failed", { error: String(err) });
-    return false;
-  }
-}
-
-function downloadFile(url: string, dest: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const follow = (url: string) => {
-      https.get(url, (res) => {
-        if (res.statusCode === 301 || res.statusCode === 302) {
-          follow(res.headers.location!);
-          return;
-        }
-        if (res.statusCode !== 200) {
-          reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-          return;
-        }
-        const file = fs.createWriteStream(dest);
-        res.pipe(file);
-        file.on("finish", () => { file.close(); resolve(); });
-        file.on("error", reject);
-      }).on("error", reject);
-    };
-    follow(url);
-  });
+export function isTerminalNotifierAvailable(extensionPath: string): boolean {
+  const bundledPath = path.join(
+    extensionPath, "bin", "terminal-notifier.app", "Contents", "MacOS", "terminal-notifier"
+  );
+  return fs.existsSync(bundledPath);
 }
 
 async function configureCodex(

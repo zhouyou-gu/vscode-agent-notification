@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
 import { Logger } from "./logger";
 import { NotificationServer } from "./server";
-import { parseAgentEvent, showNotification } from "./notification";
-import { detectTools, configureHooks, ensureTerminalNotifier } from "./hooks";
+import { parseAgentEvent, showNotification, setExtensionPath } from "./notification";
+import { detectTools, configureHooks, isTerminalNotifierAvailable } from "./hooks";
 import { detectRemote, setupRemote } from "./remote";
+import { SessionWatcher } from "./session-watcher";
 
 const STATE_KEY_CONFIGURED = "agent-notify.configured";
 const STATE_KEY_DISMISSED = "agent-notify.dismissed";
@@ -12,6 +13,7 @@ const CONFIG_VERSION = 1;
 
 let logger: Logger;
 let server: NotificationServer;
+let sessionWatcher: SessionWatcher;
 let statusBarItem: vscode.StatusBarItem;
 
 export async function activate(
@@ -22,6 +24,7 @@ export async function activate(
 
   logger.info("setup", "extension_activating");
   logger.cleanOldLogs();
+  setExtensionPath(context.extensionPath);
 
   // Start HTTP server
   server = new NotificationServer(logger, (source, payload) => {
@@ -52,6 +55,13 @@ export async function activate(
     }
   }
   context.subscriptions.push({ dispose: () => server.stop() });
+
+  // Start session file watcher (catches VS Code extension-based agent sessions)
+  sessionWatcher = new SessionWatcher(logger, (event) => {
+    showNotification(event, logger);
+  });
+  sessionWatcher.start();
+  context.subscriptions.push({ dispose: () => sessionWatcher.dispose() });
 
   // Status bar
   statusBarItem = vscode.window.createStatusBarItem(
@@ -197,37 +207,27 @@ async function runGuidedSetup(
   );
 
   // Step 2: Guide user to enable macOS notification banners
-  if (process.platform === "darwin") {
-    const tnReady = await ensureTerminalNotifier(logger);
-    if (tnReady) {
-      const enableChoice = await vscode.window.showWarningMessage(
-        `Hooks configured for ${names.join(" and ")}. One more step: enable macOS banners.\n\nGo to System Settings > Notifications > terminal-notifier > set to "Banners" and enable "Allow Notifications".`,
-        "Open System Settings",
-        "Send Test",
-        "Done"
-      );
+  if (process.platform === "darwin" && isTerminalNotifierAvailable(context.extensionPath)) {
+    const enableChoice = await vscode.window.showWarningMessage(
+      `Hooks configured for ${names.join(" and ")}. One more step: enable macOS banners.\n\nGo to System Settings > Notifications > terminal-notifier > set to "Banners" and enable "Allow Notifications".`,
+      "Open System Settings",
+      "Send Test",
+      "Done"
+    );
 
-      if (enableChoice === "Open System Settings") {
-        // Open notification settings directly
-        vscode.env.openExternal(
-          vscode.Uri.parse("x-apple.systempreferences:com.apple.Notifications-Settings")
-        );
-        // Follow up with test after user returns
-        const testChoice = await vscode.window.showInformationMessage(
-          "After enabling banners for terminal-notifier, test it here.",
-          "Send Test Notification"
-        );
-        if (testChoice) {
-          runTestNotification();
-        }
-      } else if (enableChoice === "Send Test") {
+    if (enableChoice === "Open System Settings") {
+      vscode.env.openExternal(
+        vscode.Uri.parse("x-apple.systempreferences:com.apple.Notifications-Settings")
+      );
+      const testChoice = await vscode.window.showInformationMessage(
+        "After enabling banners for terminal-notifier, test it here.",
+        "Send Test Notification"
+      );
+      if (testChoice) {
         runTestNotification();
       }
-    } else {
-      // terminal-notifier download failed — still works with VS Code in-app notifications
-      vscode.window.showInformationMessage(
-        `Hooks configured for ${names.join(" and ")}. VS Code notifications will appear in-app. macOS banners unavailable (terminal-notifier download failed).`
-      );
+    } else if (enableChoice === "Send Test") {
+      runTestNotification();
     }
   } else {
     vscode.window.showInformationMessage(

@@ -11,6 +11,12 @@ const MAX_MESSAGE_LENGTH = 150;
 
 const recentNotifications = new Map<string, number>();
 
+let extensionPath = "";
+
+export function setExtensionPath(p: string): void {
+  extensionPath = p;
+}
+
 export function parseAgentEvent(
   source: string,
   payload: Record<string, unknown>
@@ -202,24 +208,26 @@ function sendMacOSNotification(event: AgentEvent, logger: Logger): void {
   const message = event.message;
   const subtitle = event.cwd ? path.basename(event.cwd) : "";
 
-  // Try terminal-notifier first (reliable banners on Sequoia+)
-  const tnPath = path.join(
-    os.homedir(),
-    ".config",
-    "agent-notify",
-    "terminal-notifier.app",
-    "Contents",
-    "MacOS",
-    "terminal-notifier"
+  // Find terminal-notifier: bundled in extension first, then user-local fallback
+  const bundledPath = extensionPath
+    ? path.join(extensionPath, "bin", "terminal-notifier.app", "Contents", "MacOS", "terminal-notifier")
+    : "";
+  const userLocalPath = path.join(
+    os.homedir(), ".config", "agent-notify",
+    "terminal-notifier.app", "Contents", "MacOS", "terminal-notifier"
   );
+  const tnPath = (bundledPath && fs.existsSync(bundledPath)) ? bundledPath
+    : fs.existsSync(userLocalPath) ? userLocalPath
+    : "";
 
-  if (fs.existsSync(tnPath)) {
+  if (tnPath) {
     const args = [
       "-title", title,
       "-subtitle", subtitle,
       "-message", message,
       "-sound", "default",
       "-group", `agent-notify-${event.source}`,
+      "-activate", "com.microsoft.VSCode",
     ];
     execFile(tnPath, args, (err: Error | null) => {
       if (err) {
