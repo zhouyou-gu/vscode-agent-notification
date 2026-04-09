@@ -9,6 +9,7 @@ import { Logger } from "./logger";
 const DEDUP_WINDOW_MS = 1000;
 const MAX_MESSAGE_LENGTH = 150;
 const RECENTMAP_CLEANUP_INTERVAL = 60_000;
+const CODE_CLI = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code";
 
 const recentNotifications = new Map<string, number>();
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -145,8 +146,8 @@ export async function showNotification(
 
   // VS Code in-app notification
   const msg = isPermission
-    ? `[${event.title}] Tool "${event.toolName}" needs approval in ${projectName}`
-    : `[${event.title}] ${event.message}`;
+    ? `${event.title}: "${event.toolName}" needs approval in ${projectName}`
+    : `${event.title} (${projectName}): ${event.message}`;
   const showFn = isPermission
     ? vscode.window.showWarningMessage
     : vscode.window.showInformationMessage;
@@ -176,7 +177,7 @@ function focusVSCodeWindow(cwd: string, logger: Logger): void {
   execFile("osascript", ["-e", 'tell application "Visual Studio Code" to activate'], (err) => {
     if (err) logger.error("action", "activate_failed", { error: String(err) });
   });
-  execFile("code", [target], (err) => {
+  execFile(CODE_CLI, [target], (err) => {
     if (err) logger.error("action", "code_cli_focus_failed", { error: String(err), target });
   });
   logger.info("action", "hybrid_focus", { target });
@@ -244,7 +245,7 @@ function sendMacOSNotification(event: AgentEvent, logger: Logger): void {
       const target = wsFile && wsFile.scheme === "file" && wsFile.fsPath.endsWith(".code-workspace")
         ? wsFile.fsPath : event.cwd;
       const escaped = target.replace(/'/g, "'\\''");
-      args.push("-execute", `osascript -e 'tell application "Visual Studio Code" to activate' & code '${escaped}'`);
+      args.push("-execute", `osascript -e 'tell application "Visual Studio Code" to activate' & '${CODE_CLI}' '${escaped}'`);
     } else {
       args.push("-activate", bundleId);
     }
